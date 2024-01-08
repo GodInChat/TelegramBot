@@ -1,19 +1,16 @@
 import asyncio
 import traceback
-import base64
-import json
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.filters.command import Command, CommandStart
 from aiogram.types import Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.utils.deep_linking import create_start_link
-from aiogram.utils.deep_linking import decode_payload
-
-
-# result: 'https://t.me/MyBot?start=foo'
 from func.controller import *
+from aiogram.utils.deep_linking import create_start_link, decode_payload
+from urllib.parse import urlparse, parse_qs
+
+
 
 bot = Bot(token=token)
 dp = Dispatcher()
@@ -35,43 +32,84 @@ ACTIVE_CHATS_LOCK = contextLock()
 
 modelname = os.getenv("INITMODEL")
 
-async def get_start_link(payload: str, encode=False) -> str:
-    # Використовуйте функцію створення глибокого посилання
-    link = await create_start_link(bot, payload, encode)
+async def decode_url_params(url):
+    parsed_url = urlparse(url)
+    query_params = parse_qs(parsed_url.query)
+
+    # Отримайте необхідні параметри, перевіривши, чи вони існують в словнику query_params
+    nickname = query_params.get("nickname", [None])[0]
+    referrer_url = query_params.get("referrer_url", [None])[0]
+    referrer_pdf = query_params.get("referrer_pdf", [None])[0]
+
+    return {
+        "nickname": nickname,
+        "referrer_url": referrer_url,
+        "referrer_pdf": referrer_pdf
+    }
 
 
-def decode_start_parameter(start_parameter: str):
-    try:
-        # Розкодування base64url
-        decoded_bytes = base64.urlsafe_b64decode(start_parameter + '=' * (4 - len(start_parameter) % 4))
-        # Декодування JSON
-        decoded_data = json.loads(decoded_bytes)
-        return decoded_data
-    except Exception as e:
-        # Обробка помилок (наприклад, неправильний формат параметра)
-        print(f"Error decoding start parameter: {e}")
-        return None
 
 
-@dp.message(CommandStart(deep_link=True))
-async def command_start_handler(message: types.Message):
-    # Отримуємо параметр start з команди
-    start_parameter = message.get_args()
 
-    # Розкодовуємо параметр
-    decoded_parameter = decode_payload(start_parameter)
+@dp.message(CommandStart(deep_link=None))
+async def start_handler(message: types.Message):
+    args = message.text.split('/start ')
+    if len(args) > 1:
+        payload = decode_url_params(args[1])
+        # Отримайте необхідні параметри з payload
+        nickname = payload["nickname"]
+        referrer_url = payload["referrer_url"]
+        referrer_pdf = payload["referrer_pdf"]
 
-    # Отримуємо дані з параметра
-    nickname = decoded_parameter.get("nickname")
-    referrer_url = decoded_parameter.get("referrer_url")
-    referrer_pdf = decoded_parameter.get("referrer_pdf")
 
-    # Ваші привітальні повідомлення та дії
-    welcome_message = (
-        f"Цифровий двійник {nickname} радий Вам допомогти!\n"
-        f"Що вас цікавить з публікації на {referrer_url} ({referrer_pdf})?"
-    )
-    await message.answer(welcome_message)
+        welcome_message = (
+            f"Цифровий двійник {nickname} радий Вам допомогти!\n"
+            f"Що вас цікавить з публікації на {referrer_url} ({referrer_pdf})?"
+        )
+        await message.answer(welcome_message)
+    else:
+        start_message = f"Welcome to InChat Bot, ***{message.from_user.full_name}***!\n"
+        start_message_md = md_autofixer(start_message)
+        await message.answer(
+            start_message_md,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=builder.as_markup(),
+            disable_web_page_preview=True,
+        )
+
+
+
+@dp.message(Command("reset"))
+async def command_reset_handler(message: Message) -> None:
+    if message.from_user.id in allowed_ids:
+        if message.from_user.id in ACTIVE_CHATS:
+            async with ACTIVE_CHATS_LOCK:
+                ACTIVE_CHATS.pop(message.from_user.id)
+            logging.info(f"Chat has been reset for {message.from_user.first_name}")
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text="Chat has been reset",
+            )
+
+
+@dp.message(Command("getcontext"))
+async def command_get_context_handler(message: Message) -> None:
+    if message.from_user.id in allowed_ids:
+        if message.from_user.id in ACTIVE_CHATS:
+            messages = ACTIVE_CHATS.get(message.chat.id)["messages"]
+            context = ""
+            for msg in messages:
+                context += f"*{msg['role'].capitalize()}*: {msg['content']}\n"
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text=context,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text="No chat history available for this user",
+            )
 
 
 @dp.callback_query(lambda query: query.data == "modelmanager")
@@ -106,7 +144,6 @@ async def systeminfo_callback_handler(query: types.CallbackQuery):
     if query.from_user.id in admin_ids:
         await bot.send_message(
             chat_id=query.message.chat.id,
-            #text=f"<b>📦 LLM</b>\n<code>Current model: {modelname}</code>\n\n🔧 Hardware\n<code>Kernel: \n</code>\n<i>(Other options will be added soon..)</i>",
             text=f"<b>📦 LLM</b>\n<code>Current model: {modelname}</code>\n\n🔧 Hardware\n<code>Kernel: {system_info[0]}\n</code>\n<i>(Other options will be added soon..)</i>",
             parse_mode="HTML",
         )
