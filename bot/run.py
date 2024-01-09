@@ -4,12 +4,12 @@ import traceback
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.filters.command import Command, CommandStart
+from aiogram.filters import CommandObject
 from aiogram.types import Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from func.controller import *
-from aiogram.utils.deep_linking import create_start_link, decode_payload
-from urllib.parse import urlparse, parse_qs
+from aiogram.utils.deep_linking import decode_payload
 
+from func.controller import *
 
 
 bot = Bot(token=token)
@@ -32,43 +32,21 @@ ACTIVE_CHATS_LOCK = contextLock()
 
 modelname = os.getenv("INITMODEL")
 
-async def decode_url_params(url):
-    parsed_url = urlparse(url)
-    query_params = parse_qs(parsed_url.query)
-
-    # Отримайте необхідні параметри, перевіривши, чи вони існують в словнику query_params
-    nickname = query_params.get("nickname", [None])[0]
-    referrer_url = query_params.get("referrer_url", [None])[0]
-    referrer_pdf = query_params.get("referrer_pdf", [None])[0]
-
-    return {
-        "nickname": nickname,
-        "referrer_url": referrer_url,
-        "referrer_pdf": referrer_pdf
-    }
 
 
+@dp.message(CommandStart(deep_link=True))
+async def command_start_handler(message: Message, command: CommandObject) -> None:
+    if message.from_user.id in allowed_ids:
+        art_coordinates = command.args
+        logging.info(f"[*] message: '{message}'" "\n----------\n" f"command: {command}'")
+        # auth=roybebru@gmail.com&doc=DOC1.pdf,DOC2.pdf&loc=researchgate
+        try:
+            art_coordinates = decode_payload(art_coordinates)
+        except Exception as e:
+            logging.info(f"[E] Wrong Art Coordinates: {str(e)}")
+        logging.info(f"[*] Art Coordinates: '{art_coordinates}'")
 
-
-
-@dp.message(CommandStart(deep_link=None))
-async def start_handler(message: types.Message):
-    args = message.text.split('/start ')
-    if len(args) > 1:
-        payload = decode_url_params(args[1])
-        # Отримайте необхідні параметри з payload
-        nickname = payload["nickname"]
-        referrer_url = payload["referrer_url"]
-        referrer_pdf = payload["referrer_pdf"]
-
-
-        welcome_message = (
-            f"Цифровий двійник {nickname} радий Вам допомогти!\n"
-            f"Що вас цікавить з публікації на {referrer_url} ({referrer_pdf})?"
-        )
-        await message.answer(welcome_message)
-    else:
-        start_message = f"Welcome to InChat Bot, ***{message.from_user.full_name}***!\n"
+        start_message = f"Welcome to InChabot, ***{message.from_user.full_name}***!" "\n" f"Art Coordinates: ***{art_coordinates}***"
         start_message_md = md_autofixer(start_message)
         await message.answer(
             start_message_md,
@@ -76,7 +54,14 @@ async def start_handler(message: types.Message):
             reply_markup=builder.as_markup(),
             disable_web_page_preview=True,
         )
-
+    else:
+        await message.answer(
+            f"{message.from_user.full_name} [AuthBlocked]\nContact staff to be known how to use it",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        logging.info(
+            f"[Interactions] {message.from_user.first_name} {message.from_user.last_name}({message.from_user.id}) is not allowed to use this bot. Value in environment: {allowed_ids}"
+        )
 
 
 @dp.message(Command("reset"))
@@ -144,7 +129,7 @@ async def systeminfo_callback_handler(query: types.CallbackQuery):
     if query.from_user.id in admin_ids:
         await bot.send_message(
             chat_id=query.message.chat.id,
-            text=f"<b>📦 LLM</b>\n<code>Current model: {modelname}</code>\n\n🔧 Hardware\n<code>Kernel: {system_info[0]}\n</code>\n<i>(Other options will be added soon..)</i>",
+            text=f"<b>📦 LLM</b>\n<code>Current model: {modelname}</code>\n\n🔧 Hardware\n<code>Kernel: {system_info[0]}\n</code>",
             parse_mode="HTML",
         )
     else:
@@ -173,7 +158,7 @@ async def handle_message(message: types.Message):
                 cutmention = len(botinfo.username) + 2
                 prompt = message.text[cutmention:]  # + ""
             else:
-                prompt = message.text
+                prompt = message.text + " To answer always use Ukrainian language."
             await bot.send_chat_action(message.chat.id, "typing")
             full_response = ""
             sent_message = None
