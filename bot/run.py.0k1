@@ -1,0 +1,399 @@
+import asyncio
+import traceback
+import logging
+import httpx
+import aiohttp
+import json
+from urllib.parse import urlencode
+
+from aiogram import Bot, Dispatcher, types 
+from aiogram.enums import ParseMode
+from aiogram.filters.command import Command, CommandStart
+from aiogram.filters import CommandObject
+from aiogram.types import Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.deep_linking import decode_payload
+
+from func.controller import *
+
+
+bot = Bot(token=token)
+dp = Dispatcher()
+builder = InlineKeyboardBuilder()
+builder.row(
+    types.InlineKeyboardButton(text="🤔️ Information", callback_data="info"),
+    types.InlineKeyboardButton(text="⚙️ Settings", callback_data="modelmanager"),
+)
+
+commands = [
+    types.BotCommand(command="start", description="Start"),
+    types.BotCommand(command="login", description="Login"),
+    types.BotCommand(command="logout", description="Logout"),
+    types.BotCommand(command="list_pdfs", description="Get List Documents"),
+    types.BotCommand(command="reset", description="Reset Chat"),
+    types.BotCommand(command="getcontext", description="Get Chat Context Json"),
+]
+
+
+ACTIVE_CHATS = {}
+ACTIVE_CHATS_LOCK = contextLock()
+
+login_handler_active = False
+
+
+modelname = os.getenv("INITMODEL")
+
+logging.basicConfig(level=logging.INFO)
+user_credentials = {}
+
+async def authenticate_user(userid: int) -> bool:
+    global login_handler_active
+    login_handler_active = False
+    login, password = user_credentials[userid]["login"], user_credentials[userid]["password"]
+    logging.info(f"login={login}, password={password}")
+    api_url = "https://api.inchat.pp.ua:4433/auth/jwt/login"
+    payload = {
+        "username": login,
+        "password": password,
+        "grant_type": "",
+        "scope": "",
+        "client_id": "",
+        "client_secret": ""
+    }
+    urlencoded_payload = urlencode(payload)
+    logging.info(f"	urlencoded_payload={urlencoded_payload}")
+    headers = {
+        "accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+
+    access_token = ""
+    async with aiohttp.ClientSession() as client:
+        response = await client.post(api_url, data=urlencoded_payload, headers=headers)
+        answer_json = await response.json()
+        if "access_token" in answer_json.keys():
+            access_token = answer_json["access_token"]
+            logging.info(f"	access_token for {userid}: {access_token}")
+            user_credentials[userid]["access_token"] = access_token
+        else:
+            logging.info(f"	Error Login Response for {userid}: {await response.json()}")
+
+    return bool(access_token)
+
+
+#async def login_handler(message: types.Message):
+#
+#    logging.info(f"[*] Within login_handler({message})")
+#
+#    authenticated = await authenticate_user(user_credentials)
+#
+#    if authenticated:
+#        await message.answer("Ви успішно увійшли.")
+#    else:
+#
+#        await message.answer("Невірний логін або пароль.")
+
+@dp.message(Command("login"))
+async def start_login(message: Message):
+    await message.answer("Введіть свій логін:")
+    global login_handler_active
+    login_handler_active = True
+    # Змінюємо функцію-обробник для введення логіна
+    #dp.register_message_handler(process_login, content_types=types.ContentType.TEXT)
+
+
+# Функція-обробник для введення логіна
+
+async def process_login(message: Message):
+    login = message.text
+    logging.info(f"Login: '{login}'")
+    user_credentials[message.from_user.id] = {}
+    user_credentials[message.from_user.id]["login"] = login
+    await message.answer("Введіть свій пароль:")
+    # Змінюємо функцію-обробник для введення пароля
+    #dp.register_message_handler(process_password, content_types=types.ContentType.TEXT)
+
+# Функція-обробник для введення пароля
+async def process_password(message: Message):
+    password = message.text
+    logging.info(f"Password: {password}")
+    userid = message.from_user.id
+    user_credentials[userid]["password"] = password
+    global login_handler_active
+    login_handler_active = False
+
+    res = await authenticate_user(userid)
+
+
+    # Перевірка логіна і пароля (приклад)
+    # if user_credentials.get(user_id) and user_credentials[user_id]["login"] == "example" and password == "example_password":
+    #    await message.answer("Ви успішно увійшли!")
+    #
+    # else:
+    #    await message.answer("Невірний логін або пароль.")
+
+
+# Асинхронний обробник для команди логаут
+@dp.message(Command("logout"))
+async def logout_handler(message: Message):
+    user_id = message.from_user.id
+
+    if user_credentials.get(user_id):
+        # Видаляємо дані про користувача під час логауту
+        del user_credentials[user_id]
+        api_url = "https://api.inchat.pp.ua:4433/auth/jwt/login"
+        async with aiohttp.ClientSession() as client:
+            response = await client.post(api_url)
+        await message.answer("Ви успішно вийшли з облікового запису.")
+    else:
+        await message.answer("Ви ще не увійшли в обліковий запис.")
+
+#поки лишаю як шаблон
+@dp.message(Command("register"))
+async def command_register_handler(message: Message) -> None:
+    # Implement your registration logic here
+    await message.answer("Registration command is not implemented yet.")
+
+@dp.message(Command("list_pdfs"))
+async def list_pdfs(message: types.Message):
+    api_url = "https://api.inchat.pp.ua:4433/pdf/get_all"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(api_url)
+
+    if response.status_code == 200:
+        pdfs = response.json()
+        # Створюємо текстове повідомлення з переліком PDF та їх ID
+        pdf_list_text = "\n".join([f"{pdf['id']}: {pdf['name']}" for pdf in pdfs])
+        await message.answer(f"Список усіх PDF:\n{pdf_list_text}")
+    else:
+        await message.answer("Не вдалося отримати список PDF.")
+
+
+
+
+@dp.message(CommandStart(deep_link=True))
+async def command_start_handler(message: Message, command: CommandObject) -> None:
+    if message.from_user.id in allowed_ids:
+        art_coordinates = command.args
+        logging.info(f"[*] message: '{message}'" "\n----------\n" f"command: {command}'")
+        # auth=roybebru@gmail.com&doc=DOC1.pdf,DOC2.pdf&loc=researchgate
+        try:
+            art_coordinates = decode_payload(art_coordinates)
+        except Exception as e:
+            logging.info(f"[E] Wrong Art Coordinates: {str(e)}")
+        logging.info(f"[*] Art Coordinates: '{art_coordinates}'")
+
+        start_message = f"Welcome to InChabot, ***{message.from_user.full_name}***!" "\n" f"Art Coordinates: ***{art_coordinates}***"
+        start_message_md = md_autofixer(start_message)
+        await message.answer(
+            start_message_md,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=builder.as_markup(),
+            disable_web_page_preview=True,
+        )
+    else:
+        await message.answer(
+            f"{message.from_user.full_name} [AuthBlocked]\nContact staff to be known how to use it",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        logging.info(
+            f"[Interactions] {message.from_user.first_name} {message.from_user.last_name}({message.from_user.id}) is not allowed to use this bot. Value in environment: {allowed_ids}"
+        )
+
+
+@dp.message(Command("reset"))
+async def command_reset_handler(message: Message) -> None:
+    if message.from_user.id in allowed_ids:
+        if message.from_user.id in ACTIVE_CHATS:
+            async with ACTIVE_CHATS_LOCK:
+                ACTIVE_CHATS.pop(message.from_user.id)
+            logging.info(f"Chat has been reset for {message.from_user.first_name}")
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text="Chat has been reset",
+            )
+
+
+@dp.message(Command("getcontext"))
+async def command_get_context_handler(message: Message) -> None:
+    if message.from_user.id in allowed_ids:
+        if message.from_user.id in ACTIVE_CHATS:
+            messages = ACTIVE_CHATS.get(message.chat.id)["messages"]
+            context = ""
+            for msg in messages:
+                context += f"*{msg['role'].capitalize()}*: {msg['content']}\n"
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text=context,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text="No chat history available for this user",
+            )
+
+
+@dp.callback_query(lambda query: query.data == "modelmanager")
+async def modelmanager_callback_handler(query: types.CallbackQuery):
+    if query.from_user.id in admin_ids:
+        models = await model_list()
+        modelmanager_builder = InlineKeyboardBuilder()
+        for model in models:
+            modelname = model["name"]
+            # Add a button for each model
+            modelmanager_builder.row(
+                types.InlineKeyboardButton(
+                    text=modelname, callback_data=f"model_{modelname}"
+                )
+            )
+        await query.message.edit_text(
+            f"Choose model:", reply_markup=modelmanager_builder.as_markup()
+        )
+    else:
+        await query.answer("Access Denied")
+
+
+@dp.callback_query(lambda query: query.data.startswith("model_"))
+async def model_callback_handler(query: types.CallbackQuery):
+    global modelname
+    modelname = query.data.split("model_")[1]
+    await query.answer(f"Chosen model: {modelname}")
+
+
+@dp.callback_query(lambda query: query.data == "info")
+async def systeminfo_callback_handler(query: types.CallbackQuery):
+    if query.from_user.id in admin_ids:
+        await bot.send_message(
+            chat_id=query.message.chat.id,
+            text=f"<b>📦 LLM</b>\n<code>Current model: {modelname}</code>\n\n🔧 Hardware\n<code>Kernel: {system_info[0]}\n</code>",
+            parse_mode="HTML",
+        )
+    else:
+        await query.answer("Access Denied")
+
+
+@dp.message()
+async def handle_message(message: types.Message):
+    if login_handler_active == True and len(user_credentials) < 1:
+        await process_login(message)
+    elif login_handler_active == True and len(user_credentials) == 1:
+        await process_password(message)
+    elif login_handler_active == False:
+
+
+        try:
+            botinfo = await bot.get_me()
+            is_allowed_user = message.from_user.id in allowed_ids
+            is_private_chat = message.chat.type == "private"
+            is_supergroup = message.chat.type == "supergroup"
+            bot_mentioned = any(
+                entity.type == "mention"
+                and message.text[entity.offset : entity.offset + entity.length]
+                == f"@{botinfo.username}"
+                for entity in message.entities or []
+            )
+            if (
+                is_allowed_user
+                and message.text
+                and (is_private_chat or (is_supergroup and bot_mentioned))
+            ):
+                if is_supergroup and bot_mentioned:
+                    cutmention = len(botinfo.username) + 2
+                    prompt = message.text[cutmention:]  # + ""
+                else:
+                    prompt = message.text + " To answer always use Ukrainian language."
+                await bot.send_chat_action(message.chat.id, "typing")
+                full_response = ""
+                sent_message = None
+                last_sent_text = None
+
+                async with ACTIVE_CHATS_LOCK:
+                    # Add prompt to active chats object
+                    if ACTIVE_CHATS.get(message.from_user.id) is None:
+                        ACTIVE_CHATS[message.from_user.id] = {
+                            "model": modelname,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "stream": True,
+                        }
+                    else:
+                        ACTIVE_CHATS[message.from_user.id]["messages"].append(
+                            {"role": "user", "content": prompt}
+                        )
+                logging.info(
+                    f"[Request]: Processing '{prompt}' for {message.from_user.first_name} {message.from_user.last_name}"
+                )
+                payload = ACTIVE_CHATS.get(message.from_user.id)
+                async for response_data in generate(payload, modelname, prompt):
+                    msg = response_data.get("message")
+                    if msg is None:
+                        continue
+                    chunk = msg.get("content", "")
+                    full_response += chunk
+                    full_response_stripped = full_response.strip()
+
+                    # avoid Bad Request: message text is empty
+                    if full_response_stripped == "":
+                        continue
+
+                    if "." in chunk or "\n" in chunk or "!" in chunk or "?" in chunk:
+                        if sent_message:
+                            if last_sent_text != full_response_stripped:
+                                await sent_message.edit_text(full_response_stripped)
+                                last_sent_text = full_response_stripped
+                        else:
+                            sent_message = await message.answer(
+                                full_response_stripped,
+                                reply_to_message_id=message.message_id,
+                            )
+                            last_sent_text = full_response_stripped
+
+                    if response_data.get("done"):
+                        if (
+                            full_response_stripped
+                            and last_sent_text != full_response_stripped
+                        ):
+                            if sent_message:
+                                await sent_message.edit_text(full_response_stripped)
+                            else:
+                                sent_message = await message.answer(full_response_stripped)
+                        await sent_message.edit_text(
+                            md_autofixer(
+                                full_response_stripped
+                                + f"\n\nCurrent Model: `{modelname}`**\n**Generated in {response_data.get('total_duration')/10e9:.2f}s"
+                            ),
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                        )
+
+                        async with ACTIVE_CHATS_LOCK:
+                            if ACTIVE_CHATS.get(message.from_user.id) is not None:
+                                # Add response to active chats object
+                                ACTIVE_CHATS[message.from_user.id]["messages"].append(
+                                    {"role": "assistant", "content": full_response_stripped}
+                                )
+                                logging.info(
+                                    f"[Response]: '{full_response_stripped}' for {message.from_user.first_name} {message.from_user.last_name}"
+                                )
+                            else:
+                                await bot.send_message(
+                                    chat_id=message.chat.id, text="Chat was reset"
+                                )
+
+                        break
+        except Exception as e:
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text=f"""Error occured\n```\n{traceback.format_exc()}\n```""",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+
+
+async def main():
+    await bot.set_my_commands(commands)
+
+    await dp.start_polling(bot, skip_update=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

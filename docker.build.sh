@@ -2,4 +2,4 @@
 
 docker="/usr/bin/docker"
 
-sudo $docker build -t inchat-tgbot-app .
+sudo $docker build -t inchat-tgbot .
